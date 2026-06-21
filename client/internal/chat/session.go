@@ -41,9 +41,11 @@ func RunRoom(serverURL, roomName, username string, client *api.Client) error {
 			if json.Unmarshal(data, &msg) == nil && msg.Username != "" {
 				if msg.Username != username {
 					fmt.Printf("%s: %s\n", msg.Username, msg.Content)
+					os.Stdout.Sync()
 				}
 			} else {
 				fmt.Printf("%s\n", string(data))
+				os.Stdout.Sync()
 			}
 		}
 	}()
@@ -87,6 +89,8 @@ func RunRoom(serverURL, roomName, username string, client *api.Client) error {
 				leave()
 				return fmt.Errorf("send message: %w", err)
 			}
+			fmt.Printf("> %s\n", line)
+			os.Stdout.Sync()
 		case <-done:
 			_ = client.LeaveRoom(roomName, username)
 			return fmt.Errorf("disconnected from room")

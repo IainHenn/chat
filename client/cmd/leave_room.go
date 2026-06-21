@@ -23,7 +23,7 @@ var leaveRoomCmd = &cobra.Command{
 			return err
 		}
 
-		if err := api.New(server).LeaveRoom(args[0], cfg.Username); err != nil {
+		if err := api.New(server).LeaveRoom(args[0], activeUsername(cfg.Username)); err != nil {
 			return err
 		}
 

@@ -23,7 +23,7 @@ var deleteRoomCmd = &cobra.Command{
 			return err
 		}
 
-		if err := api.New(server).DeleteRoom(args[0], cfg.Username); err != nil {
+		if err := api.New(server).DeleteRoom(args[0], activeUsername(cfg.Username)); err != nil {
 			return err
 		}
 

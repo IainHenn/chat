@@ -11,6 +11,7 @@ import (
 var createRoomCmd = &cobra.Command{
 	Use:   "create-room [name]",
 	Short: "Create a new chat room",
+	Long:  "Create a room. You become the host and are added as a member. Use --username to set who creates the room (defaults to your signup name).",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -24,7 +25,7 @@ var createRoomCmd = &cobra.Command{
 		}
 
 		client := api.New(server)
-		if err := client.CreateRoom(args[0], cfg.Username); err != nil {
+		if err := client.CreateRoom(args[0], activeUsername(cfg.Username)); err != nil {
 			return err
 		}
 

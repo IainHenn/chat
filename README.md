@@ -47,7 +47,7 @@ Optional: point at a different server:
 go run . signup alice --server http://localhost:8080
 ```
 
-Config is stored at `%APPDATA%\chat\config.json` on Windows or `~/.config/chat/config.json` on Linux/macOS.
+Config is stored at `%APPDATA%\chat\config.json` on Windows or `~/.config/chat/config.json` on Linux/macOS. Every terminal on the same machine shares that file, so they share the same default username.
 
 ### Commands
 
@@ -60,22 +60,46 @@ Config is stored at `%APPDATA%\chat\config.json` on Windows or `~/.config/chat/c
 | `leave-room [name]` | Leave a room without an active session |
 | `delete-room [name]` | Delete a room you host |
 
+**Global flags** (work on any command):
+
+| Flag | Description |
+|------|-------------|
+| `--username [name]` | Override the saved username for this command |
+| `--server [url]` | Override the server URL (default `http://localhost:8080`) |
+
+Use `--username` on `create-room` and `join-room` when you want a specific identity without changing your saved signup, or when testing with **two terminals on one machine** (each tab needs a different username or messages from the other tab will be hidden).
+
 ### Examples
 
 ```bash
 # Create and list rooms
-go run . create-room general
+go run . create-room general --username alice
 go run . view-rooms
 
 # Chat in a room (type messages, /leave or Ctrl+C to exit)
-go run . join-room general
-
-# Leave or delete without an active chat session
-go run . leave-room general
-go run . delete-room general
+go run . join-room general --username alice
 ```
 
-When you run `join-room`, the CLI joins via the API, opens a WebSocket, and prints messages from other users. Exiting with `/leave` or Ctrl+C disconnects the WebSocket and calls the leave API automatically.
+Your own messages show as `> hello`. Other users show as `bob: hello`.
+
+**Two terminals on one machine:**
+
+```bash
+# Terminal 1
+go run . create-room general --username alice
+go run . join-room general --username alice
+
+# Terminal 2
+go run . join-room general --username bob
+```
+
+Without `--username`, both tabs use the same saved name from `signup`, so each tab filters out all messages as its own.
+
+```bash
+# Leave or delete without an active chat session
+go run . leave-room general --username bob
+go run . delete-room general --username alice
+```
 
 Build a binary:
 
@@ -83,8 +107,10 @@ Build a binary:
 cd client
 go build -o chat .
 ./chat signup bob
-./chat join-room general
+./chat join-room general --username bob
 ```
+
+When you run `join-room`, the CLI joins via the API, opens a WebSocket, and prints messages from other users. Exiting with `/leave` or Ctrl+C disconnects the WebSocket and calls the leave API automatically.
 
 ## API overview
 

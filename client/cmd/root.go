@@ -8,6 +8,7 @@ import (
 )
 
 var serverFlag string
+var usernameFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "chat",
@@ -23,4 +24,12 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server", "", "Chat server URL (default from config or http://localhost:8080)")
+	rootCmd.PersistentFlags().StringVar(&usernameFlag, "username", "", "Override saved username (useful when testing with two terminals)")
+}
+
+func activeUsername(cfgUsername string) string {
+	if usernameFlag != "" {
+		return usernameFlag
+	}
+	return cfgUsername
 }

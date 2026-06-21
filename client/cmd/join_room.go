@@ -10,6 +10,7 @@ import (
 var joinRoomCmd = &cobra.Command{
 	Use:   "join-room [name]",
 	Short: "Join a room and start chatting over WebSocket",
+	Long:  "Join a room and open a live chat session. Use --username to chat as a specific user (required when running two terminals on one machine). Your own messages show as '> text'; others show as 'name: text'.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -22,7 +23,7 @@ var joinRoomCmd = &cobra.Command{
 			return err
 		}
 
-		return chat.RunRoom(server, args[0], cfg.Username, api.New(server))
+		return chat.RunRoom(server, args[0], activeUsername(cfg.Username), api.New(server))
 	},
 }
 
