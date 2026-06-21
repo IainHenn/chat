@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"slices"
 	"time"
 
+	"github.com/IainHenn/chat/models"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	goredis "github.com/redis/go-redis/v9"
@@ -29,187 +29,156 @@ func Init() error {
 	return Client.Ping(context.Background()).Err()
 }
 
-type RoomCreationBody struct {
-	RoomName string `json:"room_name"`
-	Host     string `json:"host_name"`
-}
-
 func CreateRoom(c *gin.Context) {
-	var body RoomCreationBody
+	var body models.RoomCreationBody
 
 	if err := c.BindJSON(&body); err != nil {
-		fmt.Println(body.RoomName)
-		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create room, invalid body!"})
 		return
 	}
 
-	var shorthandName string
+	roomID := roomIDFromName(body.RoomName)
 
-	if len(body.RoomName) < 10 {
-		shorthandName = body.RoomName
-	} else {
-		shorthandName = body.RoomName[:10]
+	exists, err := roomExists(c, roomID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room!"})
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, gin.H{"error": "Room already exists!"})
+		return
 	}
 
-	roomID := "room:" + shorthandName
-
-	Client.SAdd(c, "rooms", roomID)
-
+	Client.SAdd(c, roomsKey, roomID)
 	Client.HSet(c, roomID, map[string]interface{}{
 		"name":      body.RoomName,
 		"createdAt": time.Now().Unix(),
 		"host":      body.Host,
 	})
+	Client.SAdd(c, membersKey(roomID), body.Host)
 
-	c.JSON(200, gin.H{"roomID": roomID})
-}
-
-type RoomsMetadata struct {
-	Name      string
-	CreatedAt string
+	c.JSON(http.StatusOK, gin.H{"roomID": roomID})
 }
 
 func ViewRooms(c *gin.Context) {
-	RoomIDs, err := Client.SMembers(c, "rooms").Result()
-
-	var rooms []RoomsMetadata
-
+	roomIDs, err := Client.SMembers(c, roomsKey).Result()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch rooms!"})
 		return
 	}
 
-	for _, id := range RoomIDs {
-		room, _ := Client.HGetAll(c, id).Result()
+	var rooms []models.RoomsMetadata
 
-		tempRoom := RoomsMetadata{
-			Name:      room["name"],
-			CreatedAt: room["createdAt"],
+	for _, id := range roomIDs {
+		if pruneOrphanSetEntry(c, id) {
+			continue
 		}
 
-		rooms = append(rooms, tempRoom)
+		room, err := Client.HGetAll(c, id).Result()
+		if err != nil {
+			continue
+		}
+
+		rooms = append(rooms, models.RoomsMetadata{
+			Name:      room["name"],
+			CreatedAt: room["createdAt"],
+		})
 	}
 
-	c.JSON(200, gin.H{"rooms": rooms})
-}
-
-type RoomActionBody struct {
-	RoomName string `json:"room_name"`
-	Username string `json:"username"`
+	c.JSON(http.StatusOK, gin.H{"rooms": rooms})
 }
 
 func JoinRoom(c *gin.Context) {
-	var body RoomActionBody
+	var body models.RoomActionBody
 
 	if err := c.BindJSON(&body); err != nil {
-		fmt.Println(body.RoomName)
-		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to join room, invalid body!"})
 		return
 	}
 
-	var shorthandName string
+	roomID := roomIDFromName(body.RoomName)
 
-	if len(body.RoomName) < 10 {
-		shorthandName = body.RoomName
-	} else {
-		shorthandName = body.RoomName[:10]
-	}
-
-	roomID := "room:" + shorthandName
-
-	RoomIDs, err := Client.SMembers(c, "rooms").Result()
-
+	exists, err := roomExists(c, roomID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room exists!"})
 		return
 	}
-
-	found := false
-
-	for _, id := range RoomIDs {
-		if roomID == id {
-			found = true
-			break
-		}
-	}
-
-	if found == false {
-		c.JSON(404, gin.H{"error": "Room not found!"})
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Room not found!"})
 		return
 	}
 
-	Client.SAdd(c, roomID+":members", body.Username)
+	Client.SAdd(c, membersKey(roomID), body.Username)
 
-	c.JSON(201, gin.H{"roomID": roomID, "username": body.Username})
+	c.JSON(http.StatusCreated, gin.H{"roomID": roomID, "username": body.Username})
 }
 
 func LeaveRoom(c *gin.Context) {
-	var body RoomActionBody
+	var body models.RoomActionBody
 
 	if err := c.BindJSON(&body); err != nil {
-		fmt.Println(body.RoomName)
-		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to leave room, invalid body!"})
 		return
 	}
 
-	var shorthandName string
+	roomID := roomIDFromName(body.RoomName)
 
-	if len(body.RoomName) < 10 {
-		shorthandName = body.RoomName
-	} else {
-		shorthandName = body.RoomName[:10]
+	exists, err := roomExists(c, roomID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room exists!"})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Room not found!"})
+		return
 	}
 
-	roomID := "room:" + shorthandName
+	member, err := isMember(c, roomID, body.Username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room membership!"})
+		return
+	}
+	if !member {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User is not a member of this room!"})
+		return
+	}
 
-	Client.SRem(c, roomID+":members", body.Username)
+	Client.SRem(c, membersKey(roomID), body.Username)
+	cleanupOrphanRoom(c, roomID)
 
-	c.JSON(200, gin.H{"roomID": roomID, "username": body.Username})
+	c.JSON(http.StatusOK, gin.H{"roomID": roomID, "username": body.Username})
 }
 
 func DeleteRoom(c *gin.Context) {
-	var body RoomActionBody
+	var body models.RoomActionBody
 
 	if err := c.BindJSON(&body); err != nil {
-		fmt.Println(body.RoomName)
-		fmt.Println(err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete room, invalid body!"})
 		return
 	}
 
-	var shorthandName string
-
-	if len(body.RoomName) < 10 {
-		shorthandName = body.RoomName
-	} else {
-		shorthandName = body.RoomName[:10]
-	}
-
-	roomID := "room:" + shorthandName
+	roomID := roomIDFromName(body.RoomName)
 
 	res, err := Client.HGetAll(c, roomID).Result()
-
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify user is owner of room!"})
 		return
 	}
-
+	if res["name"] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Room not found!"})
+		return
+	}
 	if res["host"] != body.Username {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unable to delete room, you're not the owner!"})
 		return
 	}
 
-	Client.Del(c,
-		roomID,
-		roomID+":members",
-	)
+	if err := deleteRoom(c, roomID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete room!"})
+		return
+	}
 
-	Client.SRem(c, "rooms", roomID)
-
-	c.JSON(200, gin.H{"deleted": roomID})
+	c.JSON(http.StatusOK, gin.H{"deleted": roomID})
 }
 
 var upgrader = websocket.Upgrader{
@@ -218,31 +187,38 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-type ChatMessage struct {
-	Username string `json:"username"`
-	Content  string `json:"content"`
-}
-
 func Ws(c *gin.Context) {
-	roomID := c.Query("roomID")
+	roomName := c.Query("room_name")
 	username := c.Query("username")
 
-	members, err := Client.SMembers(c, roomID+":members").Result()
-
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Failed to verify if room membership."})
+	if roomName == "" || username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "room_name and username query params are required!"})
 		return
 	}
 
-	user_in_room := slices.Contains(members, username)
+	roomID := roomIDFromName(roomName)
 
-	if user_in_room == false {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read messages, must join room first!"})
+	exists, err := roomExists(c, roomID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room exists!"})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Room not found!"})
+		return
+	}
+
+	member, err := isMember(c, roomID, username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify room membership!"})
+		return
+	}
+	if !member {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Must join room before connecting!"})
 		return
 	}
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-
 	if err != nil {
 		fmt.Println("Failed to connect server via websockets!")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect server via websockets!"})
@@ -251,30 +227,36 @@ func Ws(c *gin.Context) {
 
 	sub := Client.Subscribe(c, roomID)
 
+	defer func() {
+		sub.Close()
+		Client.SRem(c, membersKey(roomID), username)
+		conn.Close()
+	}()
+
 	go func() {
 		for msg := range sub.Channel() {
-			conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload)); err != nil {
+				break
+			}
 		}
 	}()
 
 	for {
 		_, msg, err := conn.ReadMessage()
-
 		if err != nil {
 			break
 		}
 
-		chatMsg, _ := json.Marshal(ChatMessage{
+		chatMsg, err := json.Marshal(models.ChatMessage{
 			Username: username,
 			Content:  string(msg),
 		})
+		if err != nil {
+			continue
+		}
 
-		Client.Publish(c, roomID, chatMsg)
+		if err := Client.Publish(c, roomID, chatMsg).Err(); err != nil {
+			break
+		}
 	}
-
-	defer func() {
-		sub.Close()
-		Client.SRem(c, roomID+":members", username)
-		conn.Close()
-	}()
 }
